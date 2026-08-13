@@ -104,7 +104,10 @@ class OFD2WordConverter {
                 const idMatch = node.match(/\bID="([^"]+)"/) || node.match(/\bID='([^']+)'/);
                 const nameMatch = node.match(/\bFontName="([^"]+)"/) || node.match(/\bFamilyName="([^"]+)"/) ||
                     node.match(/\bFontName='([^']+)'/) || node.match(/\bFamilyName='([^']+)'/);
-                const boldMatch = node.match(/\bBold="(true|1)"/i) || node.match(/\bWeight="(bold|700)"/i);
+                const weightMatch = node.match(/\bWeight=["']([^"']+)["']/i);
+                const boldMatch = /\bBold=["'](?:true|1)["']/i.test(node) ||
+                    (weightMatch && (/bold|black|heavy|semi[- ]?bold|demi[- ]?bold/i.test(weightMatch[1]) ||
+                        parseInt(weightMatch[1], 10) >= 600));
                 const italicMatch = node.match(/\bItalic="(true|1)"/i);
 
                 if (idMatch && nameMatch) {
@@ -176,6 +179,14 @@ class OFD2WordConverter {
         return '000000';
     }
 
+    // OFD producers use a mixture of Boolean and CSS-like font-weight values.
+    isBoldStyle(attributes) {
+        const weightMatch = attributes.match(/\bWeight=["']([^"']+)["']/i);
+        return /\bBold=["'](?:true|1)["']/i.test(attributes) ||
+            !!(weightMatch && (/bold|black|heavy|semi[- ]?bold|demi[- ]?bold/i.test(weightMatch[1]) ||
+                parseInt(weightMatch[1], 10) >= 600));
+    }
+
     // Extract Text, Images, and Paths for a single page XML file
     extractPageElements(pageXmlPath, fontMap, mediaMap) {
         const elements = [];
@@ -196,10 +207,10 @@ class OFD2WordConverter {
             const fontMatch = attributes.match(/Font="([^"]+)"/) || attributes.match(/Font='([^']+)'/);
             const sizeMatch = attributes.match(/Size="([^"]+)"/) || attributes.match(/Size='([^']+)'/);
             const textCodes = [];
-            const textCodeRegex = /<(?:[a-zA-Z0-9]+:)?TextCode[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?TextCode>/g;
+            const textCodeRegex = /<(?:[a-zA-Z0-9]+:)?TextCode\b([^>]*)>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?TextCode>/g;
             let textCodeMatch;
             while ((textCodeMatch = textCodeRegex.exec(body)) !== null) {
-                textCodes.push(textCodeMatch[1]);
+                textCodes.push({ attributes: textCodeMatch[1], text: textCodeMatch[2] });
             }
 
             if (!boundaryMatch || !sizeMatch || textCodes.length === 0) continue;
@@ -207,7 +218,7 @@ class OFD2WordConverter {
             const [x, y, w, h] = boundaryMatch[1].split(' ').map(Number);
             const fontId = fontMatch ? fontMatch[1] : '';
             const sizeStr = sizeMatch[1];
-            const text = textCodes.join('').trim();
+            const text = textCodes.map(code => code.text).join('').trim();
             const fontSizePt = Math.round(parseFloat(sizeStr) * 2.83465);
 
             let colorStr = '';
@@ -221,26 +232,56 @@ class OFD2WordConverter {
             }
 
             const fontObj = fontMap[fontId] || { name: 'SimSun', bold: false, italic: false };
-            const isObjBold = /\bBold="(true|1)"/i.test(attributes) || /\bWeight="(bold|700)"/i.test(attributes);
-            const isObjItalic = /\bItalic="(true|1)"/i.test(attributes);
-            const isUnderline = /\bUnderline="(true|1)"/i.test(attributes);
-            const isStrike = /\b(Strikeout|Strikethrough)="(true|1)"/i.test(attributes);
+            const isObjBold = this.isBoldStyle(attributes);
+            const isObjItalic = /\bItalic=["'](?:true|1)["']/i.test(attributes);
+            const isUnderline = /\bUnderline=["'](?:true|1)["']/i.test(attributes);
+            const isStrike = /\b(?:Strikeout|Strikethrough)=["'](?:true|1)["']/i.test(attributes);
 
             const alignMatch = attributes.match(/\bAlign="(left|center|right|justified)"/i);
             let align = alignMatch ? alignMatch[1].toLowerCase() : 'left';
             if (align === 'justified') align = 'both';
 
-            elements.push({
-                type: 'text',
-                x, y, w, h,
-                text,
+            const baseStyle = {
                 fontName: fontObj.name,
                 colorHex: this.parseOfdColorToHex(colorStr),
                 fontSizeHalfPt: fontSizePt * 2,
                 bold: isObjBold || fontObj.bold,
                 italic: isObjItalic || fontObj.italic,
                 underline: isUnderline,
-                strike: isStrike,
+                strike: isStrike
+            };
+            // TextCode normally only carries glyph positions, but some OFD
+            // generators add style attributes there.  Keep each code as a Word
+            // run so mixed bold/plain content survives either representation.
+            const runs = textCodes.map(code => {
+                const codeFontMatch = code.attributes.match(/\bFont=["']([^"']+)["']/i);
+                const codeSizeMatch = code.attributes.match(/\bSize=["']([^"']+)["']/i);
+                const codeColorMatch = code.attributes.match(/\bFillColor=["']([^"']+)["']/i);
+                const codeFont = codeFontMatch ? (fontMap[codeFontMatch[1]] || fontObj) : fontObj;
+                return {
+                    text: code.text,
+                    fontName: codeFont.name || baseStyle.fontName,
+                    colorHex: codeColorMatch ? this.parseOfdColorToHex(codeColorMatch[1]) : baseStyle.colorHex,
+                    fontSizeHalfPt: codeSizeMatch ? Math.round(parseFloat(codeSizeMatch[1]) * 2.83465) * 2 : baseStyle.fontSizeHalfPt,
+                    bold: this.isBoldStyle(code.attributes) || baseStyle.bold || !!codeFont.bold,
+                    italic: /\bItalic=["'](?:true|1)["']/i.test(code.attributes) || baseStyle.italic || !!codeFont.italic,
+                    underline: /\bUnderline=["'](?:true|1)["']/i.test(code.attributes) || baseStyle.underline,
+                    strike: /\b(?:Strikeout|Strikethrough)=["'](?:true|1)["']/i.test(code.attributes) || baseStyle.strike
+                };
+            }).filter(run => run.text.length > 0);
+
+            elements.push({
+                type: 'text',
+                x, y, w, h,
+                text,
+                fontName: baseStyle.fontName,
+                colorHex: baseStyle.colorHex,
+                fontSizeHalfPt: baseStyle.fontSizeHalfPt,
+                bold: baseStyle.bold,
+                italic: baseStyle.italic,
+                underline: baseStyle.underline,
+                strike: baseStyle.strike,
+                runs,
                 align
             });
         }
@@ -432,19 +473,21 @@ class OFD2WordConverter {
                     // between two ASCII words.  Chinese text needs no space.
                     const needsSpace = previousItem && entry.lineIndex !== textItems[index - 1].lineIndex &&
                         /[A-Za-z0-9]$/.test(previousItem.text) && /^[A-Za-z0-9]/.test(item.text);
-                    return `${needsSpace ? '<w:r><w:t xml:space="preserve"> </w:t></w:r>' : ''}
+                    const itemRuns = item.runs && item.runs.length > 0 ? item.runs : [item];
+                    const itemRunsXml = itemRuns.map(run => `
                     <w:r>
                         <w:rPr>
-                            <w:rFonts w:ascii="${escapeXml(item.fontName)}" w:eastAsia="${escapeXml(item.fontName)}" w:hAnsi="${escapeXml(item.fontName)}" w:cs="${escapeXml(item.fontName)}" />
-                            <w:color w:val="${item.colorHex}" />
-                            <w:sz w:val="${item.fontSizeHalfPt}" />
-                            ${item.bold ? '<w:b/>' : ''}
-                            ${item.italic ? '<w:i/>' : ''}
-                            ${item.underline ? '<w:u w:val="single"/>' : ''}
-                            ${item.strike ? '<w:strike/>' : ''}
+                            <w:rFonts w:ascii="${escapeXml(run.fontName)}" w:eastAsia="${escapeXml(run.fontName)}" w:hAnsi="${escapeXml(run.fontName)}" w:cs="${escapeXml(run.fontName)}" />
+                            <w:color w:val="${run.colorHex}" />
+                            <w:sz w:val="${run.fontSizeHalfPt}" />
+                            ${run.bold ? '<w:b/>' : ''}
+                            ${run.italic ? '<w:i/>' : ''}
+                            ${run.underline ? '<w:u w:val="single"/>' : ''}
+                            ${run.strike ? '<w:strike/>' : ''}
                         </w:rPr>
-                        <w:t xml:space="preserve">${escapeXml(item.text)}</w:t>
-                    </w:r>`;
+                        <w:t xml:space="preserve">${escapeXml(run.text)}</w:t>
+                    </w:r>`).join('');
+                    return `${needsSpace ? '<w:r><w:t xml:space="preserve"> </w:t></w:r>' : ''}${itemRunsXml}`;
                 }).join('');
 
                 paragraphContent += `${jcXml}${runsXml}`;
