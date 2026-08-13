@@ -195,14 +195,19 @@ class OFD2WordConverter {
             const boundaryMatch = attributes.match(/Boundary="([^"]+)"/) || attributes.match(/Boundary='([^']+)'/);
             const fontMatch = attributes.match(/Font="([^"]+)"/) || attributes.match(/Font='([^']+)'/);
             const sizeMatch = attributes.match(/Size="([^"]+)"/) || attributes.match(/Size='([^']+)'/);
-            const textMatch = body.match(/<(?:[a-zA-Z0-9]+:)?TextCode[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?TextCode>/);
+            const textCodes = [];
+            const textCodeRegex = /<(?:[a-zA-Z0-9]+:)?TextCode[^>]*>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?TextCode>/g;
+            let textCodeMatch;
+            while ((textCodeMatch = textCodeRegex.exec(body)) !== null) {
+                textCodes.push(textCodeMatch[1]);
+            }
 
-            if (!boundaryMatch || !sizeMatch || !textMatch) continue;
+            if (!boundaryMatch || !sizeMatch || textCodes.length === 0) continue;
 
             const [x, y, w, h] = boundaryMatch[1].split(' ').map(Number);
             const fontId = fontMatch ? fontMatch[1] : '';
             const sizeStr = sizeMatch[1];
-            const text = textMatch[1].trim();
+            const text = textCodes.join('').trim();
             const fontSizePt = Math.round(parseFloat(sizeStr) * 2.83465);
 
             let colorStr = '';
@@ -321,10 +326,68 @@ class OFD2WordConverter {
         }
         if (currentLine.length > 0) lines.push(currentLine);
 
-        return lines.map(line => {
-            const textItems = line.filter(item => item.type === 'text');
-            const imageItems = line.filter(item => item.type === 'image');
-            const pathItems = line.filter(item => item.type === 'path_border');
+        // OFD stores positioned text, not semantic paragraphs.  A normal text
+        // paragraph is therefore reconstructed from adjacent visual lines.  A
+        // larger vertical gap denotes a new paragraph; ordinary wrapped lines
+        // stay in one Word paragraph and are separated with <w:br/>.
+        const paragraphs = [];
+        let currentParagraph = [];
+
+        const getTextMetrics = (line) => {
+            const items = line.filter(item => item.type === 'text');
+            if (items.length === 0) return null;
+            return {
+                top: Math.min.apply(null, items.map(item => item.y)),
+                bottom: Math.max.apply(null, items.map(item => item.y + item.h)),
+                height: Math.max.apply(null, items.map(item => item.h)),
+                left: Math.min.apply(null, items.map(item => item.x))
+            };
+        };
+
+        for (const line of lines) {
+            const metrics = getTextMetrics(line);
+            const previousLine = currentParagraph[currentParagraph.length - 1];
+            const previousMetrics = previousLine && getTextMetrics(previousLine);
+
+            if (!metrics || !previousMetrics) {
+                if (currentParagraph.length > 0) paragraphs.push(currentParagraph);
+                currentParagraph = [line];
+                continue;
+            }
+
+            const verticalGap = metrics.top - previousMetrics.bottom;
+            // OFD coordinates are in millimetres.  The 0.75 line-height part
+            // catches paragraph spacing, while 2.5 mm prevents tiny rounding
+            // differences from splitting a paragraph.
+            const paragraphGap = Math.max(2.5, Math.max(metrics.height, previousMetrics.height) * 0.75);
+            if (verticalGap > paragraphGap) {
+                paragraphs.push(currentParagraph);
+                currentParagraph = [line];
+            } else {
+                currentParagraph.push(line);
+            }
+        }
+        if (currentParagraph.length > 0) paragraphs.push(currentParagraph);
+
+        const escapeXml = (value) => String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&apos;');
+
+        return paragraphs.map(paragraph => {
+            const textItems = [];
+            const imageItems = [];
+            const pathItems = [];
+            paragraph.forEach((line, lineIndex) => {
+                line.forEach(item => {
+                    item._lineIndex = lineIndex;
+                    if (item.type === 'text') textItems.push(item);
+                    else if (item.type === 'image') imageItems.push(item);
+                    else if (item.type === 'path_border') pathItems.push(item);
+                });
+            });
 
             let paragraphContent = '';
 
@@ -332,10 +395,11 @@ class OFD2WordConverter {
                 const lineAlign = textItems[0].align || 'left';
                 const jcXml = lineAlign !== 'left' ? `<w:pPr><w:jc w:val="${lineAlign}"/></w:pPr>` : '';
 
-                const runsXml = textItems.map(item => `
+                const runsXml = textItems.map((item, index) => `
+                    ${index > 0 && item._lineIndex !== textItems[index - 1]._lineIndex ? '<w:r><w:br/></w:r>' : ''}
                     <w:r>
                         <w:rPr>
-                            <w:rFonts w:ascii="${item.fontName}" w:eastAsia="${item.fontName}" w:hAnsi="${item.fontName}" w:cs="${item.fontName}" />
+                            <w:rFonts w:ascii="${escapeXml(item.fontName)}" w:eastAsia="${escapeXml(item.fontName)}" w:hAnsi="${escapeXml(item.fontName)}" w:cs="${escapeXml(item.fontName)}" />
                             <w:color w:val="${item.colorHex}" />
                             <w:sz w:val="${item.fontSizeHalfPt}" />
                             ${item.bold ? '<w:b/>' : ''}
@@ -343,7 +407,7 @@ class OFD2WordConverter {
                             ${item.underline ? '<w:u w:val="single"/>' : ''}
                             ${item.strike ? '<w:strike/>' : ''}
                         </w:rPr>
-                        <w:t>${item.text}</w:t>
+                        <w:t xml:space="preserve">${escapeXml(item.text)}</w:t>
                     </w:r>`).join('');
 
                 paragraphContent += `${jcXml}${runsXml}`;
