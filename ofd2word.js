@@ -187,6 +187,16 @@ class OFD2WordConverter {
                 parseInt(weightMatch[1], 10) >= 600));
     }
 
+    // Some OFD generators simulate bold by painting a filled glyph and then
+    // painting its outline.  A stroke roughly 2% or more of the font size is
+    // visibly heavier in Word, so map that representation to <w:b/>.
+    isBoldStroke(attributes, fontSize) {
+        const strokeMatch = attributes.match(/\bStroke=["'](?:true|1)["']/i);
+        const widthMatch = attributes.match(/\bLineWidth=["']([^"']+)["']/i);
+        const lineWidth = widthMatch ? parseFloat(widthMatch[1]) : 0;
+        return !!strokeMatch && !isNaN(lineWidth) && lineWidth >= Math.max(0.1, fontSize * 0.02);
+    }
+
     // Extract Text, Images, and Paths for a single page XML file
     extractPageElements(pageXmlPath, fontMap, mediaMap) {
         const elements = [];
@@ -232,7 +242,7 @@ class OFD2WordConverter {
             }
 
             const fontObj = fontMap[fontId] || { name: 'SimSun', bold: false, italic: false };
-            const isObjBold = this.isBoldStyle(attributes);
+            const isObjBold = this.isBoldStyle(attributes) || this.isBoldStroke(attributes, parseFloat(sizeStr));
             const isObjItalic = /\bItalic=["'](?:true|1)["']/i.test(attributes);
             const isUnderline = /\bUnderline=["'](?:true|1)["']/i.test(attributes);
             const isStrike = /\b(?:Strikeout|Strikethrough)=["'](?:true|1)["']/i.test(attributes);
@@ -263,7 +273,8 @@ class OFD2WordConverter {
                     fontName: codeFont.name || baseStyle.fontName,
                     colorHex: codeColorMatch ? this.parseOfdColorToHex(codeColorMatch[1]) : baseStyle.colorHex,
                     fontSizeHalfPt: codeSizeMatch ? Math.round(parseFloat(codeSizeMatch[1]) * 2.83465) * 2 : baseStyle.fontSizeHalfPt,
-                    bold: this.isBoldStyle(code.attributes) || baseStyle.bold || !!codeFont.bold,
+                    bold: this.isBoldStyle(code.attributes) || this.isBoldStroke(code.attributes,
+                        codeSizeMatch ? parseFloat(codeSizeMatch[1]) : parseFloat(sizeStr)) || baseStyle.bold || !!codeFont.bold,
                     italic: /\bItalic=["'](?:true|1)["']/i.test(code.attributes) || baseStyle.italic || !!codeFont.italic,
                     underline: /\bUnderline=["'](?:true|1)["']/i.test(code.attributes) || baseStyle.underline,
                     strike: /\b(?:Strikeout|Strikethrough)=["'](?:true|1)["']/i.test(code.attributes) || baseStyle.strike
