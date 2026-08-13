@@ -326,10 +326,12 @@ class OFD2WordConverter {
         }
         if (currentLine.length > 0) lines.push(currentLine);
 
-        // OFD stores positioned text, not semantic paragraphs.  A normal text
-        // paragraph is therefore reconstructed from adjacent visual lines.  A
-        // larger vertical gap denotes a new paragraph; ordinary wrapped lines
-        // stay in one Word paragraph and are separated with <w:br/>.
+        // OFD stores positioned text, not semantic paragraphs.  In particular,
+        // Chinese documents commonly use the *same* line spacing inside and
+        // between paragraphs.  Do not compare a gap with character height: the
+        // OFD Boundary height is often not the actual line height.  Instead,
+        // learn the normal line advance from this page and only split on a gap
+        // that is clearly larger than the surrounding text.
         const paragraphs = [];
         let currentParagraph = [];
 
@@ -344,6 +346,21 @@ class OFD2WordConverter {
             };
         };
 
+        const textLines = lines.map(getTextMetrics).filter(Boolean);
+        const lineAdvances = [];
+        for (let i = 1; i < textLines.length; i++) {
+            const advance = textLines[i].top - textLines[i - 1].top;
+            if (advance > 0) lineAdvances.push(advance);
+        }
+        lineAdvances.sort((a, b) => a - b);
+        const normalLineAdvance = lineAdvances.length > 0
+            ? lineAdvances[Math.floor(lineAdvances.length / 2)]
+            : 0;
+        const bodyLefts = textLines.map(item => item.left).sort((a, b) => a - b);
+        const normalLeft = bodyLefts.length > 0
+            ? bodyLefts[Math.floor(bodyLefts.length / 2)]
+            : 0;
+
         for (const line of lines) {
             const metrics = getTextMetrics(line);
             const previousLine = currentParagraph[currentParagraph.length - 1];
@@ -355,12 +372,18 @@ class OFD2WordConverter {
                 continue;
             }
 
-            const verticalGap = metrics.top - previousMetrics.bottom;
-            // OFD coordinates are in millimetres.  The 0.75 line-height part
-            // catches paragraph spacing, while 2.5 mm prevents tiny rounding
-            // differences from splitting a paragraph.
-            const paragraphGap = Math.max(2.5, Math.max(metrics.height, previousMetrics.height) * 0.75);
-            if (verticalGap > paragraphGap) {
+            const lineAdvance = metrics.top - previousMetrics.top;
+            // Chinese first-line indentation is normally two characters.  It
+            // is useful evidence of a paragraph boundary even when there is no
+            // extra vertical space.  Require more than one character to avoid
+            // treating small coordinate rounding differences as indentation.
+            const firstLineIndent = metrics.left - normalLeft;
+            const indentThreshold = Math.max(3, metrics.height * 1.2);
+            const hasFirstLineIndent = firstLineIndent >= indentThreshold;
+            const hasLargeVerticalGap = normalLineAdvance > 0 &&
+                lineAdvance > normalLineAdvance * 1.45;
+
+            if (hasFirstLineIndent || hasLargeVerticalGap) {
                 paragraphs.push(currentParagraph);
                 currentParagraph = [line];
             } else {
@@ -382,8 +405,7 @@ class OFD2WordConverter {
             const pathItems = [];
             paragraph.forEach((line, lineIndex) => {
                 line.forEach(item => {
-                    item._lineIndex = lineIndex;
-                    if (item.type === 'text') textItems.push(item);
+                    if (item.type === 'text') textItems.push({ item, lineIndex });
                     else if (item.type === 'image') imageItems.push(item);
                     else if (item.type === 'path_border') pathItems.push(item);
                 });
@@ -392,11 +414,25 @@ class OFD2WordConverter {
             let paragraphContent = '';
 
             if (textItems.length > 0) {
-                const lineAlign = textItems[0].align || 'left';
-                const jcXml = lineAlign !== 'left' ? `<w:pPr><w:jc w:val="${lineAlign}"/></w:pPr>` : '';
+                const firstItem = textItems[0].item;
+                const lineAlign = firstItem.align || 'left';
+                const paragraphIndent = Math.max(0, firstItem.x - normalLeft);
+                const firstLineIndentXml = paragraphIndent >= Math.max(3, firstItem.h * 1.2)
+                    ? `<w:ind w:firstLine="${Math.round(paragraphIndent * 56.7)}"/>`
+                    : '';
+                const jcXml = lineAlign !== 'left' || firstLineIndentXml
+                    ? `<w:pPr>${firstLineIndentXml}${lineAlign !== 'left' ? `<w:jc w:val="${lineAlign}"/>` : ''}</w:pPr>`
+                    : '';
 
-                const runsXml = textItems.map((item, index) => `
-                    ${index > 0 && item._lineIndex !== textItems[index - 1]._lineIndex ? '<w:r><w:br/></w:r>' : ''}
+                const runsXml = textItems.map((entry, index) => {
+                    const item = entry.item;
+                    const previousItem = index > 0 ? textItems[index - 1].item : null;
+                    // OFD splits a paragraph into physical lines.  Preserve an
+                    // explicit space when present; otherwise insert one only
+                    // between two ASCII words.  Chinese text needs no space.
+                    const needsSpace = previousItem && entry.lineIndex !== textItems[index - 1].lineIndex &&
+                        /[A-Za-z0-9]$/.test(previousItem.text) && /^[A-Za-z0-9]/.test(item.text);
+                    return `${needsSpace ? '<w:r><w:t xml:space="preserve"> </w:t></w:r>' : ''}
                     <w:r>
                         <w:rPr>
                             <w:rFonts w:ascii="${escapeXml(item.fontName)}" w:eastAsia="${escapeXml(item.fontName)}" w:hAnsi="${escapeXml(item.fontName)}" w:cs="${escapeXml(item.fontName)}" />
@@ -408,7 +444,8 @@ class OFD2WordConverter {
                             ${item.strike ? '<w:strike/>' : ''}
                         </w:rPr>
                         <w:t xml:space="preserve">${escapeXml(item.text)}</w:t>
-                    </w:r>`).join('');
+                    </w:r>`;
+                }).join('');
 
                 paragraphContent += `${jcXml}${runsXml}`;
             }
