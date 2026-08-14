@@ -349,6 +349,10 @@ class OFD2WordConverter {
             elements.push({
                 type: 'path_border',
                 x, y, w, h,
+                // Table rules are normally long, thin PathObjects.  Retain
+                // their orientation so they can later be reconstructed as a
+                // native Word table rather than independent paragraphs.
+                orientation: w >= h ? 'horizontal' : 'vertical',
                 strokeColor
             });
         }
@@ -356,8 +360,63 @@ class OFD2WordConverter {
         return elements;
     }
 
+    buildTableXml(table) {
+        const escapeXml = (value) => String(value)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+        const renderRuns = (item) => (item.runs && item.runs.length ? item.runs : [item]).map(run => `
+            <w:r><w:rPr>
+                <w:rFonts w:ascii="${escapeXml(run.fontName)}" w:eastAsia="${escapeXml(run.fontName)}" w:hAnsi="${escapeXml(run.fontName)}" w:cs="${escapeXml(run.fontName)}"/>
+                <w:color w:val="${run.colorHex}"/><w:sz w:val="${run.fontSizeHalfPt}"/>
+                ${run.bold ? '<w:b/>' : ''}${run.italic ? '<w:i/>' : ''}
+                ${run.underline ? '<w:u w:val="single"/>' : ''}${run.strike ? '<w:strike/>' : ''}
+            </w:rPr><w:t xml:space="preserve">${escapeXml(run.text)}</w:t></w:r>`).join('');
+        const borderColor = table.strokeColor || '000000';
+        const borders = `<w:tblBorders><w:top w:val="single" w:sz="4" w:color="${borderColor}"/><w:left w:val="single" w:sz="4" w:color="${borderColor}"/><w:bottom w:val="single" w:sz="4" w:color="${borderColor}"/><w:right w:val="single" w:sz="4" w:color="${borderColor}"/><w:insideH w:val="single" w:sz="4" w:color="${borderColor}"/><w:insideV w:val="single" w:sz="4" w:color="${borderColor}"/></w:tblBorders>`;
+        const grid = table.xs.slice(0, -1).map((x, i) => `<w:gridCol w:w="${Math.round((table.xs[i + 1] - x) * 56.7)}"/>`).join('');
+        const rows = table.ys.slice(0, -1).map((y, row) => {
+            const cells = table.xs.slice(0, -1).map((x, col) => {
+                const right = table.xs[col + 1];
+                const bottom = table.ys[row + 1];
+                const cellItems = table.textItems.filter(item => {
+                    const cx = item.x + item.w / 2;
+                    const cy = item.y + item.h / 2;
+                    return cx >= x && cx < right && cy >= y && cy < bottom;
+                }).sort((a, b) => Math.abs(a.y - b.y) < 1.5 ? a.x - b.x : a.y - b.y);
+                const textXml = cellItems.length ? cellItems.map(renderRuns).join('') : '';
+                return `<w:tc><w:tcPr><w:tcW w:w="${Math.round((right - x) * 56.7)}" w:type="dxa"/></w:tcPr><w:p>${textXml}</w:p></w:tc>`;
+            }).join('');
+            return `<w:tr>${cells}</w:tr>`;
+        }).join('');
+        return `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>${borders}</w:tblPr><w:tblGrid>${grid}</w:tblGrid>${rows}</w:tbl>`;
+    }
+
+    reconstructTables(elements) {
+        const rules = elements.filter(item => item.type === 'path_border');
+        const horizontals = rules.filter(item => item.orientation === 'horizontal' && item.w > 5);
+        const verticals = rules.filter(item => item.orientation === 'vertical' && item.h > 5);
+        if (horizontals.length < 2 || verticals.length < 2) return elements;
+        const unique = values => values.sort((a, b) => a - b).filter((value, i, all) => i === 0 || Math.abs(value - all[i - 1]) > 0.5);
+        const xs = unique(verticals.map(item => item.x + item.w / 2));
+        const ys = unique(horizontals.map(item => item.y + item.h / 2));
+        if (xs.length < 2 || ys.length < 2) return elements;
+        const left = xs[0], right = xs[xs.length - 1], top = ys[0], bottom = ys[ys.length - 1];
+        // Only claim a grid when every rule spans the full detected table area.
+        const horizontalRules = horizontals.filter(item => item.x <= left + 1 && item.x + item.w >= right - 1 && item.y >= top - 1 && item.y <= bottom + 1);
+        const verticalRules = verticals.filter(item => item.y <= top + 1 && item.y + item.h >= bottom - 1 && item.x >= left - 1 && item.x <= right + 1);
+        if (horizontalRules.length < ys.length || verticalRules.length < xs.length) return elements;
+        const textItems = elements.filter(item => item.type === 'text' && item.x + item.w / 2 >= left && item.x + item.w / 2 < right && item.y + item.h / 2 >= top && item.y + item.h / 2 < bottom);
+        const table = { xs, ys, textItems, strokeColor: horizontalRules[0].strokeColor };
+        const excluded = new Set(horizontalRules.concat(verticalRules, textItems));
+        return elements.filter(item => !excluded.has(item)).concat({
+            type: 'table', x: left, y: top, w: right - left, h: bottom - top,
+            tableXml: this.buildTableXml(table)
+        });
+    }
+
     // Build Paragraph XML from layout elements
     buildParagraphs(elements) {
+        elements = this.reconstructTables(elements);
         elements.sort((a, b) => (Math.abs(a.y - b.y) < 1.5 ? a.x - b.x : a.y - b.y));
 
         const lines = [];
@@ -368,7 +427,7 @@ class OFD2WordConverter {
                 currentLine.push(el);
             } else {
                 const prev = currentLine[currentLine.length - 1];
-                if (Math.abs(el.y - prev.y) < 2.0) {
+                if (el.type !== 'table' && prev.type !== 'table' && Math.abs(el.y - prev.y) < 2.0) {
                     currentLine.push(el);
                 } else {
                     lines.push(currentLine);
@@ -455,15 +514,19 @@ class OFD2WordConverter {
             const textItems = [];
             const imageItems = [];
             const pathItems = [];
+            const tableItems = [];
             paragraph.forEach((line, lineIndex) => {
                 line.forEach(item => {
                     if (item.type === 'text') textItems.push({ item, lineIndex });
                     else if (item.type === 'image') imageItems.push(item);
                     else if (item.type === 'path_border') pathItems.push(item);
+                    else if (item.type === 'table') tableItems.push(item);
                 });
             });
 
             let paragraphContent = '';
+
+            if (tableItems.length > 0) return tableItems.map(item => item.tableXml).join('');
 
             if (textItems.length > 0) {
                 const firstItem = textItems[0].item;
