@@ -335,7 +335,11 @@ class OFD2WordConverter {
         }
 
         // 3. Parse Path Objects (Table Borders)
-        const pathObjectRegex = /<(?:[a-zA-Z0-9]+:)?PathObject\b([\s\S]*?)(?:\/>|><\/(?:[a-zA-Z0-9]+:)?PathObject>)/g;
+        // PathObject bodies commonly contain AbbreviatedData followed by
+        // whitespace before the closing tag.  Capture attributes separately;
+        // the former expression only matched a closing tag immediately after
+        // '>' and therefore skipped normal table rules entirely.
+        const pathObjectRegex = /<(?:[a-zA-Z0-9]+:)?PathObject\b([^>]*)(?:\/>|>[\s\S]*?<\/(?:[a-zA-Z0-9]+:)?PathObject>)/g;
         while ((match = pathObjectRegex.exec(xmlContent)) !== null) {
             const attributes = match[1];
             const boundaryMatch = attributes.match(/Boundary="([^"]+)"/) || attributes.match(/Boundary='([^']+)'/);
@@ -383,7 +387,15 @@ class OFD2WordConverter {
                     const cy = item.y + item.h / 2;
                     return cx >= x && cx < right && cy >= y && cy < bottom;
                 }).sort((a, b) => Math.abs(a.y - b.y) < 1.5 ? a.x - b.x : a.y - b.y);
-                const textXml = cellItems.length ? cellItems.map(renderRuns).join('') : '';
+                const textXml = cellItems.length ? cellItems.map((item, index) => {
+                    const previous = index > 0 ? cellItems[index - 1] : null;
+                    // A cell may contain multiple OFD visual lines.  Keep
+                    // those as Word line breaks, while adjacent fragments on
+                    // the same OFD line remain one continuous run.
+                    const lineBreak = previous && Math.abs(item.y - previous.y) > 1.5
+                        ? '<w:r><w:br/></w:r>' : '';
+                    return lineBreak + renderRuns(item);
+                }).join('') : '';
                 return `<w:tc><w:tcPr><w:tcW w:w="${Math.round((right - x) * 56.7)}" w:type="dxa"/></w:tcPr><w:p>${textXml}</w:p></w:tc>`;
             }).join('');
             return `<w:tr>${cells}</w:tr>`;
