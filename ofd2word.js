@@ -492,10 +492,6 @@ class OFD2WordConverter {
         const normalLineAdvance = lineAdvances.length > 0
             ? lineAdvances[Math.floor(lineAdvances.length / 2)]
             : 0;
-        const bodyLefts = textLines.map(item => item.left).sort((a, b) => a - b);
-        const normalLeft = bodyLefts.length > 0
-            ? bodyLefts[Math.floor(bodyLefts.length / 2)]
-            : 0;
 
         for (const line of lines) {
             const metrics = getTextMetrics(line);
@@ -513,7 +509,11 @@ class OFD2WordConverter {
             // is useful evidence of a paragraph boundary even when there is no
             // extra vertical space.  Require more than one character to avoid
             // treating small coordinate rounding differences as indentation.
-            const firstLineIndent = metrics.left - normalLeft;
+            // Compare consecutive lines, not the page-wide left edge.  A page
+            // number, heading, or table can have a much smaller x-coordinate
+            // than body text; using that global value made every normal body
+            // line appear to be a new paragraph.
+            const firstLineIndent = metrics.left - previousMetrics.left;
             const indentThreshold = Math.max(3, metrics.height * 1.2);
             const hasFirstLineIndent = firstLineIndent >= indentThreshold;
             const hasLargeVerticalGap = normalLineAdvance > 0 &&
@@ -556,7 +556,11 @@ class OFD2WordConverter {
             if (textItems.length > 0) {
                 const firstItem = textItems[0].item;
                 const lineAlign = firstItem.align || 'left';
-                const paragraphIndent = Math.max(0, firstItem.x - normalLeft);
+                // Derive indentation from this paragraph's own lines.  Do not
+                // use the page-wide leftmost object, which may be a page number
+                // or a table cell unrelated to this paragraph.
+                const paragraphBodyLeft = Math.min.apply(null, textItems.map(entry => entry.item.x));
+                const paragraphIndent = Math.max(0, firstItem.x - paragraphBodyLeft);
                 const firstLineIndentXml = paragraphIndent >= Math.max(3, firstItem.h * 1.2)
                     ? `<w:ind w:firstLine="${Math.round(paragraphIndent * 56.7)}"/>`
                     : '';
