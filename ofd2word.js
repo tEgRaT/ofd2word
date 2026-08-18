@@ -450,6 +450,32 @@ class OFD2WordConverter {
 
     // Build Paragraph XML from layout elements
     buildParagraphs(elements) {
+        // OFD page numbers are often emitted as three separate text objects,
+        // for example: "—" + "13" + "—".  Remove only that pattern in the
+        // bottom margin; numeric content inside tables remains untouched.
+        const textElements = elements.filter(item => item.type === 'text');
+        if (textElements.length > 0) {
+            const pageBottom = Math.max.apply(null, elements.map(item => item.y + item.h));
+            const footerCandidates = textElements.filter(item => item.y >= pageBottom - 15);
+            const footerGroups = [];
+            footerCandidates.sort((a, b) => Math.abs(a.y - b.y) < 1 ? a.x - b.x : a.y - b.y);
+            footerCandidates.forEach(item => {
+                const group = footerGroups[footerGroups.length - 1];
+                if (!group || Math.abs(item.y - group[0].y) >= 1.5) footerGroups.push([item]);
+                else group.push(item);
+            });
+            const pageNumberElements = new Set();
+            footerGroups.forEach(group => {
+                const value = group.slice().sort((a, b) => a.x - b.x).map(item => item.text).join('');
+                if (/^[\-—–]\s*\d+\s*[\-—–]$/.test(value)) {
+                    group.forEach(item => pageNumberElements.add(item));
+                }
+            });
+            if (pageNumberElements.size > 0) {
+                elements = elements.filter(item => !pageNumberElements.has(item));
+            }
+        }
+
         elements = this.reconstructTables(elements);
         elements.sort((a, b) => (Math.abs(a.y - b.y) < 1.5 ? a.x - b.x : a.y - b.y));
 
