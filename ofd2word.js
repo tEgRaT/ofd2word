@@ -409,19 +409,27 @@ class OFD2WordConverter {
         const verticals = rules.filter(item => item.orientation === 'vertical' && item.h > 5);
         if (horizontals.length < 2 || verticals.length < 2) return elements;
         const unique = values => values.sort((a, b) => a - b).filter((value, i, all) => i === 0 || Math.abs(value - all[i - 1]) > 0.5);
-        const xs = unique(verticals.map(item => item.x + item.w / 2));
-        const ys = unique(horizontals.map(item => item.y + item.h / 2));
-        if (xs.length < 2 || ys.length < 2) return elements;
-        const left = xs[0], right = xs[xs.length - 1], top = ys[0], bottom = ys[ys.length - 1];
-        // Prefer a table whenever a page has a credible horizontal/vertical
-        // grid.  OFD tables often omit a segment for a merged cell or include
-        // a slightly shortened rule, so requiring every line to span the
-        // entire rectangle rejects valid tables.
-        const horizontalRules = horizontals.filter(item => item.x <= left + 1 && item.x + item.w >= right - 1 && item.y >= top - 1 && item.y <= bottom + 1);
-        const verticalRules = verticals.filter(item => item.y <= top + 1 && item.y + item.h >= bottom - 1 && item.x >= left - 1 && item.x <= right + 1);
-        const gridHorizontals = horizontalRules.length >= 2 ? horizontalRules : horizontals;
-        const gridVerticals = verticalRules.length >= 2 ? verticalRules : verticals;
-        if (gridHorizontals.length < 2 || gridVerticals.length < 2) return elements;
+        // Find a set of vertical rules sharing the same long y-span.  This is
+        // the reliable table envelope; using every horizontal rule on a page
+        // accidentally absorbed ordinary text above and below the table.
+        const anchor = verticals.slice().sort((a, b) => b.h - a.h)[0];
+        const overlap = (a, b) => Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+        const gridVerticals = verticals.filter(item =>
+            overlap(item, anchor) >= Math.min(item.h, anchor.h) * 0.8);
+        if (gridVerticals.length < 2) return elements;
+
+        const xs = unique(gridVerticals.map(item => item.x + item.w / 2));
+        if (xs.length < 2) return elements;
+        const left = xs[0], right = xs[xs.length - 1];
+        const top = Math.min.apply(null, gridVerticals.map(item => item.y));
+        const bottom = Math.max.apply(null, gridVerticals.map(item => item.y + item.h));
+        const gridHorizontals = horizontals.filter(item => {
+            const lineY = item.y + item.h / 2;
+            return lineY >= top - 1 && lineY <= bottom + 1 &&
+                item.x <= right - 1 && item.x + item.w >= left + 1;
+        });
+        const ys = unique(gridHorizontals.map(item => item.y + item.h / 2).concat([top, bottom]));
+        if (gridHorizontals.length < 1 || ys.length < 2) return elements;
         const textItems = elements.filter(item => item.type === 'text' && item.x + item.w / 2 >= left && item.x + item.w / 2 < right && item.y + item.h / 2 >= top && item.y + item.h / 2 < bottom);
         const table = { xs, ys, textItems, strokeColor: gridHorizontals[0].strokeColor };
         const excluded = new Set(gridHorizontals.concat(gridVerticals, textItems));
