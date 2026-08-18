@@ -413,13 +413,18 @@ class OFD2WordConverter {
         const ys = unique(horizontals.map(item => item.y + item.h / 2));
         if (xs.length < 2 || ys.length < 2) return elements;
         const left = xs[0], right = xs[xs.length - 1], top = ys[0], bottom = ys[ys.length - 1];
-        // Only claim a grid when every rule spans the full detected table area.
+        // Prefer a table whenever a page has a credible horizontal/vertical
+        // grid.  OFD tables often omit a segment for a merged cell or include
+        // a slightly shortened rule, so requiring every line to span the
+        // entire rectangle rejects valid tables.
         const horizontalRules = horizontals.filter(item => item.x <= left + 1 && item.x + item.w >= right - 1 && item.y >= top - 1 && item.y <= bottom + 1);
         const verticalRules = verticals.filter(item => item.y <= top + 1 && item.y + item.h >= bottom - 1 && item.x >= left - 1 && item.x <= right + 1);
-        if (horizontalRules.length < ys.length || verticalRules.length < xs.length) return elements;
+        const gridHorizontals = horizontalRules.length >= 2 ? horizontalRules : horizontals;
+        const gridVerticals = verticalRules.length >= 2 ? verticalRules : verticals;
+        if (gridHorizontals.length < 2 || gridVerticals.length < 2) return elements;
         const textItems = elements.filter(item => item.type === 'text' && item.x + item.w / 2 >= left && item.x + item.w / 2 < right && item.y + item.h / 2 >= top && item.y + item.h / 2 < bottom);
-        const table = { xs, ys, textItems, strokeColor: horizontalRules[0].strokeColor };
-        const excluded = new Set(horizontalRules.concat(verticalRules, textItems));
+        const table = { xs, ys, textItems, strokeColor: gridHorizontals[0].strokeColor };
+        const excluded = new Set(gridHorizontals.concat(gridVerticals, textItems));
         return elements.filter(item => !excluded.has(item)).concat({
             type: 'table', x: left, y: top, w: right - left, h: bottom - top,
             tableXml: this.buildTableXml(table)
@@ -611,16 +616,10 @@ class OFD2WordConverter {
                 paragraphContent += imgXml;
             }
 
-            if (pathItems.length > 0 && textItems.length === 0 && imageItems.length === 0) {
-                const borderItem = pathItems[0];
-                return `<w:p>
-                    <w:pPr>
-                        <w:pBdr>
-                            <w:bottom w:val="single" w:sz="6" w:space="1" w:color="${borderItem.strokeColor}"/>
-                        </w:pBdr>
-                    </w:pPr>
-                </w:p>`;
-            }
+            // A PathObject is a drawing primitive, not a Word paragraph.
+            // When it does not belong to a reconstructed table, omit it rather
+            // than generating a stray paragraph bottom border between text.
+            if (pathItems.length > 0 && textItems.length === 0 && imageItems.length === 0) return '';
 
             return `<w:p>${paragraphContent}</w:p>`;
         }).join('');
