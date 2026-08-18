@@ -347,6 +347,15 @@ class OFD2WordConverter {
             if (!boundaryMatch) continue;
 
             const [x, y, w, h] = boundaryMatch[1].split(' ').map(Number);
+            const isExplicitlyUnstroked = /\bStroke=["'](?:false|0)["']/i.test(attributes);
+            const isFilled = /\bFill=["'](?:true|1)["']/i.test(attributes);
+
+            // These are filled background rectangles used by some OFD writers
+            // behind every visual text line.  They are neither table borders
+            // nor paragraph separators; retaining them split a Chinese
+            // paragraph into one Word paragraph per source line.
+            if (isExplicitlyUnstroked && isFilled) continue;
+
             const strokeColorMatch = attributes.match(/StrokeColor="([^"]+)"/) || attributes.match(/StrokeColor='([^']+)'/);
             const strokeColor = strokeColorMatch ? this.parseOfdColorToHex(strokeColorMatch[1]) : 'CCCCCC';
 
@@ -492,6 +501,12 @@ class OFD2WordConverter {
         const normalLineAdvance = lineAdvances.length > 0
             ? lineAdvances[Math.floor(lineAdvances.length / 2)]
             : 0;
+        const pageTextLefts = textLines.map(item => item.left).sort((a, b) => a - b);
+        // The median is resilient to page numbers and occasional indented
+        // lines, while providing the body margin needed for a one-line heading.
+        const pageBodyLeft = pageTextLefts.length > 0
+            ? pageTextLefts[Math.floor(pageTextLefts.length / 2)]
+            : 0;
 
         for (const line of lines) {
             const metrics = getTextMetrics(line);
@@ -504,7 +519,6 @@ class OFD2WordConverter {
                 continue;
             }
 
-            const lineAdvance = metrics.top - previousMetrics.top;
             // Chinese first-line indentation is normally two characters.  It
             // is useful evidence of a paragraph boundary even when there is no
             // extra vertical space.  Require more than one character to avoid
@@ -516,10 +530,20 @@ class OFD2WordConverter {
             const firstLineIndent = metrics.left - previousMetrics.left;
             const indentThreshold = Math.max(3, metrics.height * 1.2);
             const hasFirstLineIndent = firstLineIndent >= indentThreshold;
+            const lineAdvance = metrics.top - previousMetrics.top;
             const hasLargeVerticalGap = normalLineAdvance > 0 &&
                 lineAdvance > normalLineAdvance * 1.45;
+            const previousTextItems = previousLine.filter(item => item.type === 'text');
+            const currentTextItems = line.filter(item => item.type === 'text');
+            // A short, bold-only line is a section heading.  This separates
+            // "（二）职责分工" from the indented body paragraph without
+            // splitting a line that merely begins with bold inline text.
+            const hasHeadingBreak = previousTextItems.length > 0 &&
+                previousTextItems.every(item => item.bold) &&
+                previousTextItems.reduce((length, item) => length + item.text.length, 0) <= 30 &&
+                currentTextItems.some(item => !item.bold);
 
-            if (hasFirstLineIndent || hasLargeVerticalGap) {
+            if (hasFirstLineIndent || hasLargeVerticalGap || hasHeadingBreak) {
                 paragraphs.push(currentParagraph);
                 currentParagraph = [line];
             } else {
@@ -560,7 +584,7 @@ class OFD2WordConverter {
                 // use the page-wide leftmost object, which may be a page number
                 // or a table cell unrelated to this paragraph.
                 const paragraphBodyLeft = Math.min.apply(null, textItems.map(entry => entry.item.x));
-                const paragraphIndent = Math.max(0, firstItem.x - paragraphBodyLeft);
+                const paragraphIndent = Math.max(0, firstItem.x - Math.min(paragraphBodyLeft, pageBodyLeft));
                 const firstLineIndentXml = paragraphIndent >= Math.max(3, firstItem.h * 1.2)
                     ? `<w:ind w:firstLine="${Math.round(paragraphIndent * 56.7)}"/>`
                     : '';
