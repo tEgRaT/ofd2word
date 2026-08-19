@@ -564,11 +564,11 @@ class OFD2WordConverter {
             ? lineAdvances[Math.floor(lineAdvances.length / 2)]
             : 0;
         const pageTextLefts = textLines.map(item => item.left).sort((a, b) => a - b);
-        // The median is resilient to page numbers and occasional indented
-        // lines, while providing the body margin needed for a one-line heading.
-        const pageBodyLeft = pageTextLefts.length > 0
-            ? pageTextLefts[Math.floor(pageTextLefts.length / 2)]
-            : 0;
+        // At this point table text and recognized page numbers have already
+        // been removed.  The minimum text x-coordinate is therefore the body
+        // margin; using the median could incorrectly select the two-character
+        // indented position when most lines are indented.
+        const pageBodyLeft = pageTextLefts.length > 0 ? pageTextLefts[0] : 0;
 
         for (const line of lines) {
             const metrics = getTextMetrics(line);
