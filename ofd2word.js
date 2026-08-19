@@ -450,12 +450,14 @@ class OFD2WordConverter {
 
     // Build Paragraph XML from layout elements
     buildParagraphs(elements) {
-        // OFD page numbers are often emitted as three separate text objects,
-        // for example: "—" + "13" + "—".  Remove only that pattern in the
-        // bottom margin; numeric content inside tables remains untouched.
+        // Page numbers have no single OFD representation.  Detect a footer
+        // from several independent signals instead of requiring "—13—".
         const textElements = elements.filter(item => item.type === 'text');
         if (textElements.length > 0) {
             const pageBottom = Math.max.apply(null, elements.map(item => item.y + item.h));
+            const pageLeft = Math.min.apply(null, textElements.map(item => item.x));
+            const pageRight = Math.max.apply(null, textElements.map(item => item.x + item.w));
+            const pageCenter = (pageLeft + pageRight) / 2;
             const footerCandidates = textElements.filter(item => item.y >= pageBottom - 15);
             const footerGroups = [];
             footerCandidates.sort((a, b) => Math.abs(a.y - b.y) < 1 ? a.x - b.x : a.y - b.y);
@@ -466,8 +468,23 @@ class OFD2WordConverter {
             });
             const pageNumberElements = new Set();
             footerGroups.forEach(group => {
-                const value = group.slice().sort((a, b) => a.x - b.x).map(item => item.text).join('');
-                if (/^[\-—–]\s*\d+\s*[\-—–]$/.test(value)) {
+                const ordered = group.slice().sort((a, b) => a.x - b.x);
+                const value = ordered.map(item => item.text).join('').replace(/\s/g, '');
+                const numericFooter = /^(?:[\-—–·•]*\d+[\-—–·•]*|第\d+[页頁]|Page\d+|\d+\/\d+)$/i.test(value);
+                if (!numericFooter) return;
+
+                const groupTop = Math.min.apply(null, group.map(item => item.y));
+                const previous = textElements.filter(item => item.y < groupTop)
+                    .sort((a, b) => b.y - a.y)[0];
+                const groupCenter = (Math.min.apply(null, group.map(item => item.x)) +
+                    Math.max.apply(null, group.map(item => item.x + item.w))) / 2;
+                const verticalGap = previous ? groupTop - (previous.y + previous.h) : 0;
+                const previousStyle = previous && (previous.fontName !== group[0].fontName ||
+                    Math.abs(previous.fontSizeHalfPt - group[0].fontSizeHalfPt) >= 4);
+                const centered = Math.abs(groupCenter - pageCenter) <= Math.max(10, (pageRight - pageLeft) * 0.2);
+                // Require the numeric/footer shape plus either a clear gap,
+                // a changed footer style, or footer-like centered placement.
+                if (verticalGap >= 2 || previousStyle || centered) {
                     group.forEach(item => pageNumberElements.add(item));
                 }
             });
