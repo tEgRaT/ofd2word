@@ -230,6 +230,11 @@ class OFD2WordConverter {
             const sizeStr = sizeMatch[1];
             const text = textCodes.map(code => code.text).join('').trim();
             const fontSizePt = Math.round(parseFloat(sizeStr) * 2.83465);
+            const ctmMatch = attributes.match(/\bCTM=["']([^"']+)["']/i);
+            const ctmValues = ctmMatch ? ctmMatch[1].split(/[\s,]+/).map(Number) : [];
+            const horizontalScalePct = ctmValues.length >= 1 && isFinite(ctmValues[0]) && ctmValues[0] > 0
+                ? Math.max(1, Math.min(1000, Math.round(ctmValues[0] * 100)))
+                : 100;
 
             let colorStr = '';
             const attrColor = attributes.match(/FillColor="([^"]+)"/) || attributes.match(/FillColor='([^']+)'/);
@@ -255,6 +260,7 @@ class OFD2WordConverter {
                 fontName: fontObj.name,
                 colorHex: this.parseOfdColorToHex(colorStr),
                 fontSizeHalfPt: fontSizePt * 2,
+                charScalePct: horizontalScalePct,
                 bold: isObjBold || fontObj.bold,
                 italic: isObjItalic || fontObj.italic,
                 underline: isUnderline,
@@ -273,6 +279,7 @@ class OFD2WordConverter {
                     fontName: codeFont.name || baseStyle.fontName,
                     colorHex: codeColorMatch ? this.parseOfdColorToHex(codeColorMatch[1]) : baseStyle.colorHex,
                     fontSizeHalfPt: codeSizeMatch ? Math.round(parseFloat(codeSizeMatch[1]) * 2.83465) * 2 : baseStyle.fontSizeHalfPt,
+                    charScalePct: horizontalScalePct,
                     bold: this.isBoldStyle(code.attributes) || this.isBoldStroke(code.attributes,
                         codeSizeMatch ? parseFloat(codeSizeMatch[1]) : parseFloat(sizeStr)) || baseStyle.bold || !!codeFont.bold,
                     italic: /\bItalic=["'](?:true|1)["']/i.test(code.attributes) || baseStyle.italic || !!codeFont.italic,
@@ -389,6 +396,7 @@ class OFD2WordConverter {
             <w:r><w:rPr>
                 <w:rFonts w:ascii="${escapeXml(run.fontName)}" w:eastAsia="${escapeXml(run.fontName)}" w:hAnsi="${escapeXml(run.fontName)}" w:cs="${escapeXml(run.fontName)}"/>
                 <w:color w:val="${run.colorHex}"/><w:sz w:val="${run.fontSizeHalfPt}"/>
+                ${run.charScalePct && run.charScalePct !== 100 ? `<w:w w:val="${run.charScalePct}"/>` : ''}
                 ${run.bold ? '<w:b/>' : ''}${run.italic ? '<w:i/>' : ''}
                 ${run.underline ? '<w:u w:val="single"/>' : ''}${run.strike ? '<w:strike/>' : ''}
             </w:rPr><w:t xml:space="preserve">${escapeXml(run.text)}</w:t></w:r>`).join('');
@@ -685,6 +693,7 @@ class OFD2WordConverter {
                             <w:rFonts w:ascii="${escapeXml(run.fontName)}" w:eastAsia="${escapeXml(run.fontName)}" w:hAnsi="${escapeXml(run.fontName)}" w:cs="${escapeXml(run.fontName)}" />
                             <w:color w:val="${run.colorHex}" />
                             <w:sz w:val="${run.fontSizeHalfPt}" />
+                            ${run.charScalePct && run.charScalePct !== 100 ? `<w:w w:val="${run.charScalePct}"/>` : ''}
                             ${run.bold ? '<w:b/>' : ''}
                             ${run.italic ? '<w:i/>' : ''}
                             ${run.underline ? '<w:u w:val="single"/>' : ''}
