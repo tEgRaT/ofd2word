@@ -354,14 +354,17 @@ class OFD2WordConverter {
             // behind every visual text line.  They are neither table borders
             // nor paragraph separators; retaining them split a Chinese
             // paragraph into one Word paragraph per source line.
-            if (isExplicitlyUnstroked && isFilled) continue;
+            if (isExplicitlyUnstroked && isFilled && h > 1) continue;
 
             const strokeColorMatch = attributes.match(/StrokeColor="([^"]+)"/) || attributes.match(/StrokeColor='([^']+)'/);
-            const strokeColor = strokeColorMatch ? this.parseOfdColorToHex(strokeColorMatch[1]) : 'CCCCCC';
+            const fillColorMatch = attributes.match(/FillColor="([^"]+)"/) || attributes.match(/FillColor='([^']+)'/);
+            const strokeColor = strokeColorMatch ? this.parseOfdColorToHex(strokeColorMatch[1]) :
+                (fillColorMatch ? this.parseOfdColorToHex(fillColorMatch[1]) : 'CCCCCC');
 
             elements.push({
                 type: 'path_border',
                 x, y, w, h,
+                lineWidth: parseFloat((attributes.match(/LineWidth="([^"]+)"/) || attributes.match(/LineWidth='([^']+)'/) || [0, 0])[1]) || h,
                 // Table rules are normally long, thin PathObjects.  Retain
                 // their orientation so they can later be reconstructed as a
                 // native Word table rather than independent paragraphs.
@@ -494,6 +497,9 @@ class OFD2WordConverter {
         }
 
         elements = this.reconstructTables(elements);
+        const pageTextElements = elements.filter(item => item.type === 'text');
+        const pageLeft = pageTextElements.length ? Math.min.apply(null, pageTextElements.map(item => item.x)) : 0;
+        const pageRight = pageTextElements.length ? Math.max.apply(null, pageTextElements.map(item => item.x + item.w)) : 0;
         elements.sort((a, b) => (Math.abs(a.y - b.y) < 1.5 ? a.x - b.x : a.y - b.y));
 
         const lines = [];
@@ -622,17 +628,37 @@ class OFD2WordConverter {
 
             if (textItems.length > 0) {
                 const firstItem = textItems[0].item;
-                const lineAlign = firstItem.align || 'left';
+                const firstLineItems = paragraph[0].filter(item => item.type === 'text');
+                const firstLineLeft = firstLineItems.length ? Math.min.apply(null, firstLineItems.map(item => item.x)) : firstItem.x;
+                const firstLineRight = firstLineItems.length ? Math.max.apply(null, firstLineItems.map(item => item.x + item.w)) : firstItem.x + firstItem.w;
+                const leftGap = firstLineLeft - pageLeft;
+                const rightGap = pageRight - firstLineRight;
+                const edgeTolerance = Math.max(3, firstItem.h * 1.5);
+                let lineAlign = firstItem.align || 'left';
+                if (leftGap > edgeTolerance && rightGap > edgeTolerance &&
+                    Math.abs(leftGap - rightGap) <= edgeTolerance * 1.5) {
+                    lineAlign = 'center';
+                } else if (leftGap > edgeTolerance * 2 && rightGap <= edgeTolerance) {
+                    lineAlign = 'right';
+                }
                 // Derive indentation from this paragraph's own lines.  Do not
                 // use the page-wide leftmost object, which may be a page number
                 // or a table cell unrelated to this paragraph.
                 const paragraphBodyLeft = Math.min.apply(null, textItems.map(entry => entry.item.x));
-                const paragraphIndent = Math.max(0, firstItem.x - Math.min(paragraphBodyLeft, pageBodyLeft));
+                const paragraphIndent = lineAlign === 'left'
+                    ? Math.max(0, firstItem.x - Math.min(paragraphBodyLeft, pageBodyLeft))
+                    : 0;
                 const firstLineIndentXml = paragraphIndent >= Math.max(3, firstItem.h * 1.2)
                     ? `<w:ind w:firstLine="${Math.round(paragraphIndent * 56.7)}"/>`
                     : '';
-                const jcXml = lineAlign !== 'left' || firstLineIndentXml
-                    ? `<w:pPr>${firstLineIndentXml}${lineAlign !== 'left' ? `<w:jc w:val="${lineAlign}"/>` : ''}</w:pPr>`
+                const hasWideInlineGap = textItems.some((entry, index) => index > 0 &&
+                    entry.lineIndex === textItems[index - 1].lineIndex &&
+                    entry.item.x - (textItems[index - 1].item.x + textItems[index - 1].item.w) > Math.max(12, entry.item.h * 3));
+                const tabsXml = hasWideInlineGap
+                    ? `<w:tabs><w:tab w:val="right" w:pos="${Math.round((pageRight - pageLeft) * 56.7)}"/></w:tabs>`
+                    : '';
+                const jcXml = lineAlign !== 'left' || firstLineIndentXml || tabsXml
+                    ? `<w:pPr>${firstLineIndentXml}${tabsXml}${lineAlign !== 'left' ? `<w:jc w:val="${lineAlign}"/>` : ''}</w:pPr>`
                     : '';
 
                 const runsXml = textItems.map((entry, index) => {
@@ -643,6 +669,10 @@ class OFD2WordConverter {
                     // between two ASCII words.  Chinese text needs no space.
                     const needsSpace = previousItem && entry.lineIndex !== textItems[index - 1].lineIndex &&
                         /[A-Za-z0-9]$/.test(previousItem.text) && /^[A-Za-z0-9]/.test(item.text);
+                    const sameLineGap = previousItem && entry.lineIndex === textItems[index - 1].lineIndex
+                        ? item.x - (previousItem.x + previousItem.w) : 0;
+                    const tabBefore = sameLineGap > Math.max(12, item.h * 3)
+                        ? '<w:r><w:tab/></w:r>' : '';
                     const itemRuns = item.runs && item.runs.length > 0 ? item.runs : [item];
                     const itemRunsXml = itemRuns.map(run => `
                     <w:r>
@@ -657,7 +687,7 @@ class OFD2WordConverter {
                         </w:rPr>
                         <w:t xml:space="preserve">${escapeXml(run.text)}</w:t>
                     </w:r>`).join('');
-                    return `${needsSpace ? '<w:r><w:t xml:space="preserve"> </w:t></w:r>' : ''}${itemRunsXml}`;
+                    return `${needsSpace ? '<w:r><w:t xml:space="preserve"> </w:t></w:r>' : ''}${tabBefore}${itemRunsXml}`;
                 }).join('');
 
                 paragraphContent += `${jcXml}${runsXml}`;
@@ -695,10 +725,11 @@ class OFD2WordConverter {
                 paragraphContent += imgXml;
             }
 
-            // A PathObject is a drawing primitive, not a Word paragraph.
-            // When it does not belong to a reconstructed table, omit it rather
-            // than generating a stray paragraph bottom border between text.
-            if (pathItems.length > 0 && textItems.length === 0 && imageItems.length === 0) return '';
+            if (pathItems.length > 0 && textItems.length === 0 && imageItems.length === 0) {
+                const borderItem = pathItems[0];
+                const borderSize = Math.max(2, Math.round((borderItem.lineWidth || borderItem.h) * 22.68));
+                return `<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="${borderSize}" w:space="1" w:color="${borderItem.strokeColor}"/></w:pBdr></w:pPr></w:p>`;
+            }
 
             return `<w:p>${paragraphContent}</w:p>`;
         }).join('');
