@@ -597,6 +597,10 @@ class OFD2WordConverter {
                 lineAdvance > normalLineAdvance * 1.45;
             const previousTextItems = previousLine.filter(item => item.type === 'text');
             const currentTextItems = line.filter(item => item.type === 'text');
+            const previousLineText = previousTextItems.map(item => item.text).join('').trim();
+            const hasIndentedLineStart = metrics.left - pageBodyLeft >= indentThreshold;
+            const previousEndsSentence = /[。！？；：]$/.test(previousLineText);
+            const followsCompletedIndentedLine = hasIndentedLineStart && previousEndsSentence;
             // A short, bold-only line is a section heading.  This separates
             // "（二）职责分工" from the indented body paragraph without
             // splitting a line that merely begins with bold inline text.
@@ -605,7 +609,7 @@ class OFD2WordConverter {
                 previousTextItems.reduce((length, item) => length + item.text.length, 0) <= 30 &&
                 currentTextItems.some(item => !item.bold);
 
-            if (hasFirstLineIndent || hasLargeVerticalGap || hasHeadingBreak) {
+            if (hasFirstLineIndent || hasLargeVerticalGap || hasHeadingBreak || followsCompletedIndentedLine) {
                 paragraphs.push(currentParagraph);
                 currentParagraph = [line];
             } else {
