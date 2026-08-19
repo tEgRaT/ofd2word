@@ -339,9 +339,10 @@ class OFD2WordConverter {
         // whitespace before the closing tag.  Capture attributes separately;
         // the former expression only matched a closing tag immediately after
         // '>' and therefore skipped normal table rules entirely.
-        const pathObjectRegex = /<(?:[a-zA-Z0-9]+:)?PathObject\b([^>]*)(?:\/>|>[\s\S]*?<\/(?:[a-zA-Z0-9]+:)?PathObject>)/g;
+        const pathObjectRegex = /<(?:[a-zA-Z0-9]+:)?PathObject\b([^>]*)(?:\/>|>([\s\S]*?)<\/(?:[a-zA-Z0-9]+:)?PathObject>)/g;
         while ((match = pathObjectRegex.exec(xmlContent)) !== null) {
             const attributes = match[1];
+            const body = match[2] || '';
             const boundaryMatch = attributes.match(/Boundary="([^"]+)"/) || attributes.match(/Boundary='([^']+)'/);
 
             if (!boundaryMatch) continue;
@@ -356,8 +357,12 @@ class OFD2WordConverter {
             // paragraph into one Word paragraph per source line.
             if (isExplicitlyUnstroked && isFilled && h > 1) continue;
 
-            const strokeColorMatch = attributes.match(/StrokeColor="([^"]+)"/) || attributes.match(/StrokeColor='([^']+)'/);
-            const fillColorMatch = attributes.match(/FillColor="([^"]+)"/) || attributes.match(/FillColor='([^']+)'/);
+            const strokeColorMatch = attributes.match(/StrokeColor="([^"]+)"/) || attributes.match(/StrokeColor='([^']+)'/) ||
+                body.match(/<(?:[a-zA-Z0-9]+:)?StrokeColor\b[^>]*\bValue="([^"]+)"/) ||
+                body.match(/<(?:[a-zA-Z0-9]+:)?StrokeColor\b[^>]*\bValue='([^']+)'/);
+            const fillColorMatch = attributes.match(/FillColor="([^"]+)"/) || attributes.match(/FillColor='([^']+)'/) ||
+                body.match(/<(?:[a-zA-Z0-9]+:)?FillColor\b[^>]*\bValue="([^"]+)"/) ||
+                body.match(/<(?:[a-zA-Z0-9]+:)?FillColor\b[^>]*\bValue='([^']+)'/);
             const strokeColor = strokeColorMatch ? this.parseOfdColorToHex(strokeColorMatch[1]) :
                 (fillColorMatch ? this.parseOfdColorToHex(fillColorMatch[1]) : 'CCCCCC');
 
