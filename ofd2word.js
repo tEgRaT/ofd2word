@@ -14,6 +14,7 @@ class OFD2WordConverter {
         this.docxDir = path.join(process.cwd(), `docx_tmp_${Date.now()}`);
         this.imagesToEmbed = [];
         this.imgIdx = 1; // Global image counter across all pages
+        this.bodyLeft = null;
     }
 
     // Unzip OFD archive
@@ -554,21 +555,15 @@ class OFD2WordConverter {
         };
 
         const textLines = lines.map(getTextMetrics).filter(Boolean);
-        const lineAdvances = [];
-        for (let i = 1; i < textLines.length; i++) {
-            const advance = textLines[i].top - textLines[i - 1].top;
-            if (advance > 0) lineAdvances.push(advance);
-        }
-        lineAdvances.sort((a, b) => a - b);
-        const normalLineAdvance = lineAdvances.length > 0
-            ? lineAdvances[Math.floor(lineAdvances.length / 2)]
-            : 0;
         const pageTextLefts = textLines.map(item => item.left).sort((a, b) => a - b);
         // At this point table text and recognized page numbers have already
         // been removed.  The minimum text x-coordinate is therefore the body
         // margin; using the median could incorrectly select the two-character
         // indented position when most lines are indented.
-        const pageBodyLeft = pageTextLefts.length > 0 ? pageTextLefts[0] : 0;
+        if (pageTextLefts.length > 0) {
+            this.bodyLeft = this.bodyLeft === null ? pageTextLefts[0] : Math.min(this.bodyLeft, pageTextLefts[0]);
+        }
+        const pageBodyLeft = this.bodyLeft === null ? 0 : this.bodyLeft;
 
         for (const line of lines) {
             const metrics = getTextMetrics(line);
@@ -592,9 +587,8 @@ class OFD2WordConverter {
             const firstLineIndent = metrics.left - previousMetrics.left;
             const indentThreshold = Math.max(3, metrics.height * 1.2);
             const hasFirstLineIndent = firstLineIndent >= indentThreshold;
-            const lineAdvance = metrics.top - previousMetrics.top;
-            const hasLargeVerticalGap = normalLineAdvance > 0 &&
-                lineAdvance > normalLineAdvance * 1.45;
+            const verticalGap = metrics.top - previousMetrics.bottom;
+            const hasLargeVerticalGap = verticalGap > Math.max(6, Math.max(metrics.height, previousMetrics.height) * 1.4);
             const previousTextItems = previousLine.filter(item => item.type === 'text');
             const currentTextItems = line.filter(item => item.type === 'text');
             const previousLineText = previousTextItems.map(item => item.text).join('').trim();
@@ -612,6 +606,7 @@ class OFD2WordConverter {
             if (hasFirstLineIndent || hasLargeVerticalGap || hasHeadingBreak || followsCompletedIndentedLine) {
                 paragraphs.push(currentParagraph);
                 currentParagraph = [line];
+                if (hasLargeVerticalGap) currentParagraph.leadingBlank = true;
             } else {
                 currentParagraph.push(line);
             }
@@ -626,6 +621,7 @@ class OFD2WordConverter {
             .replace(/'/g, '&apos;');
 
         return paragraphs.map(paragraph => {
+            const leadingBlankXml = paragraph.leadingBlank ? '<w:p></w:p>' : '';
             const textItems = [];
             const imageItems = [];
             const pathItems = [];
@@ -641,7 +637,7 @@ class OFD2WordConverter {
 
             let paragraphContent = '';
 
-            if (tableItems.length > 0) return tableItems.map(item => item.tableXml).join('');
+            if (tableItems.length > 0) return leadingBlankXml + tableItems.map(item => item.tableXml).join('');
 
             if (textItems.length > 0) {
                 const firstItem = textItems[0].item;
@@ -749,7 +745,7 @@ class OFD2WordConverter {
                 return `<w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="${borderSize}" w:space="1" w:color="${borderItem.strokeColor}"/></w:pBdr></w:pPr></w:p>`;
             }
 
-            return `<w:p>${paragraphContent}</w:p>`;
+            return `${leadingBlankXml}<w:p>${paragraphContent}</w:p>`;
         }).join('');
     }
 
@@ -856,6 +852,7 @@ class OFD2WordConverter {
         try {
             this.imagesToEmbed = [];
             this.imgIdx = 1;
+            this.bodyLeft = null;
 
             this.unzipOFD();
 
