@@ -15,6 +15,9 @@ class OFD2WordConverter {
         this.imagesToEmbed = [];
         this.imgIdx = 1; // Global image counter across all pages
         this.bodyLeft = null;
+        this.bodyRight = null;
+        this.pageWidthMm = 210;
+        this.pageHeightMm = 297;
     }
 
     // Unzip OFD archive
@@ -42,6 +45,19 @@ class OFD2WordConverter {
     }
 
     // Discover all page Content.xml files in correct document order
+    extractPageArea() {
+        const docXmlPath = path.join(this.tempDir, 'Doc_0', 'Document.xml');
+        if (!fs.existsSync(docXmlPath)) return;
+        const xmlContent = fs.readFileSync(docXmlPath, 'utf-8');
+        const physicalMatch = xmlContent.match(/<(?:[a-zA-Z0-9]+:)?PhysicalBox[^>]*>([^<]+)<\/(?:[a-zA-Z0-9]+:)?PhysicalBox>/i);
+        if (!physicalMatch) return;
+        const values = physicalMatch[1].trim().split(/[\s,]+/).map(Number);
+        if (values.length >= 4 && values.every(value => isFinite(value))) {
+            this.pageWidthMm = values[2] - values[0];
+            this.pageHeightMm = values[3] - values[1];
+        }
+    }
+
     getPagePaths() {
         const pagesDir = path.join(this.tempDir, 'Doc_0', 'Pages');
         if (!fs.existsSync(pagesDir)) return [];
@@ -514,6 +530,9 @@ class OFD2WordConverter {
         const pageTextElements = elements.filter(item => item.type === 'text');
         const pageLeft = pageTextElements.length ? Math.min.apply(null, pageTextElements.map(item => item.x)) : 0;
         const pageRight = pageTextElements.length ? Math.max.apply(null, pageTextElements.map(item => item.x + item.w)) : 0;
+        if (pageTextElements.length > 0) {
+            this.bodyRight = this.bodyRight === null ? pageRight : Math.max(this.bodyRight, pageRight);
+        }
         elements.sort((a, b) => (Math.abs(a.y - b.y) < 1.5 ? a.x - b.x : a.y - b.y));
 
         const lines = [];
@@ -808,11 +827,19 @@ class OFD2WordConverter {
         </Relationships>`);
 
         // 4. word/document.xml
+        const mmToTwips = value => Math.max(0, Math.round(value * 56.6929));
+        const leftMarginMm = this.bodyLeft === null ? 20 : this.bodyLeft;
+        const rightMarginMm = this.bodyRight === null
+            ? 20
+            : Math.max(0, this.pageWidthMm - this.bodyRight);
+        const pageMarginsXml = `<w:pgMar w:top="${mmToTwips(20)}" w:right="${mmToTwips(rightMarginMm)}" w:bottom="${mmToTwips(20)}" w:left="${mmToTwips(leftMarginMm)}" w:header="0" w:footer="0" w:gutter="0"/>`;
+        const sectionXml = `<w:sectPr><w:pgSz w:w="${mmToTwips(this.pageWidthMm)}" w:h="${mmToTwips(this.pageHeightMm)}"/>${pageMarginsXml}</w:sectPr>`;
         fs.writeFileSync(path.join(wordSubDir, 'document.xml'),
             `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
             <w:body>
                 ${paragraphsXml}
+                ${sectionXml}
             </w:body>
         </w:document>`);
 
@@ -859,8 +886,10 @@ class OFD2WordConverter {
             this.imagesToEmbed = [];
             this.imgIdx = 1;
             this.bodyLeft = null;
+            this.bodyRight = null;
 
             this.unzipOFD();
+            this.extractPageArea();
 
             const fontMap = this.extractFontMap();
             const mediaMap = this.extractMediaMap();
