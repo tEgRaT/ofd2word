@@ -689,14 +689,24 @@ class OFD2WordConverter {
                 const firstLineIndentXml = paragraphIndent >= Math.max(3, firstItem.h * 1.2)
                     ? `<w:ind w:firstLine="${Math.round(paragraphIndent * 56.7)}"/>`
                     : '';
+                const paragraphMetrics = paragraph.map(getTextMetrics).filter(Boolean);
+                const paragraphAdvances = [];
+                for (let metricIndex = 1; metricIndex < paragraphMetrics.length; metricIndex++) {
+                    const advance = paragraphMetrics[metricIndex].top - paragraphMetrics[metricIndex - 1].top;
+                    if (advance > 0) paragraphAdvances.push(advance);
+                }
+                paragraphAdvances.sort((a, b) => a - b);
+                const lineSpacingXml = paragraphAdvances.length > 0
+                    ? `<w:spacing w:line="${Math.round(paragraphAdvances[Math.floor(paragraphAdvances.length / 2)] * 56.7)}" w:lineRule="exact"/>`
+                    : '';
                 const hasWideInlineGap = textItems.some((entry, index) => index > 0 &&
                     entry.lineIndex === textItems[index - 1].lineIndex &&
                     entry.item.x - (textItems[index - 1].item.x + textItems[index - 1].item.w) > Math.max(12, entry.item.h * 3));
                 const tabsXml = hasWideInlineGap
                     ? `<w:tabs><w:tab w:val="right" w:pos="${Math.round((pageRight - pageLeft) * 56.7)}"/></w:tabs>`
                     : '';
-                const jcXml = lineAlign !== 'left' || firstLineIndentXml || tabsXml
-                    ? `<w:pPr>${firstLineIndentXml}${tabsXml}${lineAlign !== 'left' ? `<w:jc w:val="${lineAlign}"/>` : ''}</w:pPr>`
+                const jcXml = lineAlign !== 'left' || firstLineIndentXml || tabsXml || lineSpacingXml
+                    ? `<w:pPr>${firstLineIndentXml}${tabsXml}${lineSpacingXml}${lineAlign !== 'left' ? `<w:jc w:val="${lineAlign}"/>` : ''}</w:pPr>`
                     : '';
 
                 const runsXml = textItems.map((entry, index) => {
