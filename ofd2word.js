@@ -632,6 +632,7 @@ class OFD2WordConverter {
                 paragraphs.push(currentParagraph);
                 currentParagraph = [line];
                 if (hasLargeVerticalGap) currentParagraph.leadingBlank = true;
+                if (hasHeadingBreak || hasSingleLineStyleBreak) currentParagraph.leadingStyleBreak = true;
             } else {
                 currentParagraph.push(line);
             }
@@ -696,8 +697,10 @@ class OFD2WordConverter {
                     if (advance > 0) paragraphAdvances.push(advance);
                 }
                 paragraphAdvances.sort((a, b) => a - b);
+                const paragraphBefore = paragraph.leadingStyleBreak ? 120 : 0;
                 const lineSpacingXml = paragraphAdvances.length > 0
-                    ? `<w:spacing w:line="${Math.round(paragraphAdvances[Math.floor(paragraphAdvances.length / 2)] * 56.7)}" w:lineRule="exact"/>`
+                    ? `<w:spacing w:before="${paragraphBefore}" w:line="${Math.round(paragraphAdvances[Math.floor(paragraphAdvances.length / 2)] * 56.7)}" w:lineRule="exact"/>`
+                    : paragraphBefore > 0 ? `<w:spacing w:before="${paragraphBefore}"/>`
                     : '';
                 const hasWideInlineGap = textItems.some((entry, index) => index > 0 &&
                     entry.lineIndex === textItems[index - 1].lineIndex &&
