@@ -602,8 +602,14 @@ class OFD2WordConverter {
                 previousTextItems.every(item => item.bold) &&
                 previousTextItems.reduce((length, item) => length + item.text.length, 0) <= 30 &&
                 currentTextItems.some(item => !item.bold);
+            const hasSingleLineStyleBreak = previousTextItems.length === 1 &&
+                currentTextItems.length > 0 &&
+                (previousTextItems[0].fontName !== currentTextItems[0].fontName ||
+                    previousTextItems[0].fontSizeHalfPt !== currentTextItems[0].fontSizeHalfPt ||
+                    previousTextItems[0].bold !== currentTextItems[0].bold);
 
-            if (hasFirstLineIndent || hasLargeVerticalGap || hasHeadingBreak || followsCompletedIndentedLine) {
+            if (hasFirstLineIndent || hasLargeVerticalGap || hasHeadingBreak ||
+                hasSingleLineStyleBreak || followsCompletedIndentedLine) {
                 paragraphs.push(currentParagraph);
                 currentParagraph = [line];
                 if (hasLargeVerticalGap) currentParagraph.leadingBlank = true;
